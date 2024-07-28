@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>幸运星</title>
+</head>
+<body>
+    <h1>幸运星</h1>
+    <button onclick="generateNumbers()">幸运号码</button>
+    <div id="results"></div>
+    <script>
+        function generateNumbers() {
+            fetch('/generate')
+                .then(response => response.json())
+                .then(data => {
+                    const resultsDiv = document.getElementById('results');
+                    resultsDiv.innerHTML = '';
+                    data.forEach(result => {
+                        const resultElem = document.createElement('div');
+                        resultElem.innerHTML = `
+                            红球: ${result.red_balls.join(', ')}
+                            篮球: ${result.blue_ball.join(', ')}<br>
+                            跨度: ${result.span}<br>
+                            总和: ${result.total_sum}<br>
+                            区间比: ${result.ratios.join(':')}<br>
+                            奇偶比: ${result.odd_even_ratio.join(':')}<br>
+                            跟上期重号个数: ${Array.from(result.common_elements).join(', ')}
+                        `;
+                        resultsDiv.appendChild(resultElem);
+                    });
+                });
+        }
+    </script>
+</body>
+</html>

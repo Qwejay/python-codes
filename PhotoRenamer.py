@@ -5,11 +5,16 @@ import piexif
 import pillow_heif
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import logging
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from threading import Thread
+import logging
+import re
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+DATE_FORMAT = "%Y%m%d_%H%M%S"
+INCLUDE_TIMESTAMP = True
+stop_requested = False
 
 def get_exif_date(file_path):
     try:
@@ -19,7 +24,7 @@ def get_exif_date(file_path):
                 date_str = str(tags['EXIF DateTimeOriginal'])
                 return datetime.datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
     except Exception as e:
-        logging.error(f"读取 {file_path} 的 EXIF 数据时出错: {e}")
+        logging.error(f"读取EXIF数据失败: {e}")
     return None
 
 def get_heic_date(file_path):
@@ -30,7 +35,7 @@ def get_heic_date(file_path):
             date_str = exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal].decode('utf-8')
             return datetime.datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
     except Exception as e:
-        logging.error(f"读取 {file_path} 的 HEIC 数据时出错: {e}")
+        logging.error(f"读取HEIC数据失败: {e}")
     return None
 
 def get_file_modification_date(file_path):
@@ -38,8 +43,27 @@ def get_file_modification_date(file_path):
         modification_time = os.path.getmtime(file_path)
         return datetime.datetime.fromtimestamp(modification_time)
     except Exception as e:
-        logging.error(f"读取 {file_path} 的修改日期时出错: {e}")
+        logging.error(f"获取文件修改日期失败: {e}")
     return None
+
+def generate_unique_filename(directory, base_name, ext, original_filename):
+    new_filename = f"{base_name}{ext}"
+    new_file_path = os.path.join(directory, new_filename)
+    if new_file_path.lower() == original_filename.lower():
+        return new_file_path
+    counter = 1
+    while os.path.exists(new_file_path):
+        new_filename = f"{base_name}_{counter}{ext}"
+        new_file_path = os.path.join(directory, new_filename)
+        counter += 1
+    return new_file_path
+
+def rename_photos(files_listbox, progress_var):
+    total_files = files_listbox.size()
+    for i in range(total_files):
+        file_path = files_listbox.get(i).strip('"')
+        rename_photo(file_path, files_listbox, progress_var, total_files)
+    messagebox.showinfo("重命名完成", f"成功重命名 {total_files} 个文件。")
 
 def rename_photo(file_path, files_listbox, progress_var, total_files):
     filename = os.path.basename(file_path)
@@ -47,75 +71,96 @@ def rename_photo(file_path, files_listbox, progress_var, total_files):
     if not date_time:
         date_time = get_file_modification_date(file_path)
     if date_time:
-        new_filename = date_time.strftime('%Y%m%d_%H%M%S') + os.path.splitext(filename)[1]
-        new_file_path = os.path.join(os.path.dirname(file_path), new_filename)
-        os.rename(file_path, new_file_path)
-        files_listbox.insert(tk.END, f'{filename} -> {new_filename}')
-        print(f'重命名: {filename} -> {new_filename}')
-    else:
-        logging.warning(f'未找到 {filename} 的日期')
+        base_name = date_time.strftime(DATE_FORMAT)
+        ext = os.path.splitext(filename)[1]
+        directory = os.path.dirname(file_path)
+        new_file_path = generate_unique_filename(directory, base_name, ext, file_path)
+        if new_file_path != file_path:
+            try:
+                os.rename(file_path, new_file_path)
+                files_listbox.insert(tk.END, f'"{file_path}" 重命名为 "{new_file_path}"')
+            except Exception as e:
+                logging.error(f"重命名失败: {file_path}, 错误: {e}")
     progress_var.set(progress_var.get() + 100 / total_files)
 
 def on_drop(event, files_listbox):
-    paths = event.data.split()
+    paths = re.findall(r'(?<=\{)[^{}]*(?=\})|[^{}\s]+', event.data)
     for path in paths:
-        if os.path.isdir(path):
-            for root, _, files in os.walk(path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    if os.path.isfile(file_path) and file.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.heic')):
-                        if file_path not in files_listbox.get(0, tk.END):
-                            files_listbox.insert(tk.END, file_path)
-        elif os.path.isfile(path) and path.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.heic')):
-            if path not in files_listbox.get(0, tk.END):
-                files_listbox.insert(tk.END, path)
-
-def start_renaming(files_listbox, progress_var):
-    original_files = list(files_listbox.get(0, tk.END))  # 保存原始文件路径
-    files_listbox.delete(0, tk.END)  # 清空列表
-    progress_var.set(0)
-    total_files = len(original_files)
-    for file_path in original_files:
-        rename_photo(file_path, files_listbox, progress_var, total_files)
-    files_listbox.insert(tk.END, "重命名完成。")
+        path = path.strip().strip('{}')
+        if path.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif', '.heic')) and path not in files_listbox.get(0, tk.END):
+            files_listbox.insert(tk.END, path)
 
 def open_file(event, files_listbox):
-    selected = files_listbox.get(files_listbox.curselection())
-    if " -> " in selected:
-        original_name, new_name = selected.split(" -> ")
-        directory = os.path.dirname(original_name)
-        new_file_path = os.path.join(directory, new_name)
-        os.startfile(new_file_path)
-    else:
-        os.startfile(selected)
+    selected_index = files_listbox.curselection()
+    if selected_index:
+        file_path = files_listbox.get(selected_index[0]).strip('"')
+        os.startfile(file_path)
 
 def remove_file(event, files_listbox):
     selected_indices = files_listbox.curselection()
-    for index in selected_indices[::-1]:  # 从后往前删除，避免索引错乱
+    for index in selected_indices[::-1]:
         files_listbox.delete(index)
 
-def clear_list(files_listbox):
-    files_listbox.delete(0, tk.END)
+def stop_renaming():
+    global stop_requested
+    stop_requested = True
 
-# 创建主窗口
+def open_settings():
+    settings_window = tk.Toplevel(root)
+    settings_window.title("设置")
+
+    tk.Label(settings_window, text="日期格式:").grid(row=0, column=0, padx=10, pady=10)
+    date_format_var = tk.StringVar(value=DATE_FORMAT)
+    date_format_entry = tk.Entry(settings_window, textvariable=date_format_var)
+    date_format_entry.grid(row=0, column=1, padx=10, pady=10)
+
+    include_timestamp_var = tk.BooleanVar(value=INCLUDE_TIMESTAMP)
+    include_timestamp_checkbox = tk.Checkbutton(settings_window, text="包括时间戳", variable=include_timestamp_var)
+    include_timestamp_checkbox.grid(row=1, column=0, columnspan=2, padx=10, pady=10)
+
+    save_button = tk.Button(settings_window, text="保存设置", command=lambda: save_settings(date_format_var.get(), include_timestamp_var.get()))
+    save_button.grid(row=2, column=0, columnspan=2, padx=10, pady=10)
+
+def save_settings(date_format, include_timestamp):
+    global DATE_FORMAT, INCLUDE_TIMESTAMP
+    DATE_FORMAT = date_format
+    INCLUDE_TIMESTAMP = include_timestamp
+    messagebox.showinfo("设置", "设置已保存")
+
 root = TkinterDnD.Tk()
-root.title("照片重命名")
+root.title("照片重命名工具")
+root.geometry("800x600")
 
-# 创建并放置部件
-ttk.Label(root, text="拖动文件夹或文件即可添加进重命名列表，双击打开文件，右键清除该文件").grid(row=0, column=0, padx=10, pady=10)
-files_listbox = tk.Listbox(root, width=50)
-files_listbox.grid(row=1, column=0, padx=10, pady=10)
+main_frame = ttk.Frame(root)
+main_frame.pack(fill=tk.BOTH, expand=True)
+
+label_description = ttk.Label(main_frame, text="将文件拖拽至此处以添加至重命名列表，双击打开文件，右键移除文件")
+label_description.pack(fill=tk.X, padx=10, pady=10)
+
+files_listbox = tk.Listbox(main_frame, width=100, height=15)
+files_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 files_listbox.drop_target_register(DND_FILES)
 files_listbox.dnd_bind('<<Drop>>', lambda e: on_drop(e, files_listbox))
-files_listbox.bind('<Double-Button-1>', lambda e: open_file(e, files_listbox))
-files_listbox.bind('<Button-3>', lambda e: remove_file(e, files_listbox))  # 绑定右键点击事件
+files_listbox.bind('<Double-1>', lambda e: open_file(e, files_listbox))
+files_listbox.bind('<Button-3>', lambda e: remove_file(e, files_listbox))
 
 progress_var = tk.DoubleVar()
-progress = ttk.Progressbar(root, variable=progress_var, maximum=100)
-progress.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+progress = ttk.Progressbar(main_frame, variable=progress_var, maximum=100)
+progress.pack(fill=tk.X, padx=10, pady=10)
 
-ttk.Button(root, text="开始重命名", command=lambda: Thread(target=start_renaming, args=(files_listbox, progress_var)).start()).grid(row=3, column=0, padx=10, pady=10)
-ttk.Button(root, text="清空列表", command=lambda: clear_list(files_listbox)).grid(row=4, column=0, padx=10, pady=10)
+button_frame = ttk.Frame(main_frame)
+button_frame.pack(fill=tk.X, padx=10, pady=10)
 
-# 运行应用程序
+start_button = ttk.Button(button_frame, text="开始重命名", command=lambda: Thread(target=rename_photos, args=(files_listbox, progress_var)).start())
+start_button.pack(side=tk.LEFT, padx=5)
+
+stop_button = ttk.Button(button_frame, text="停止重命名", command=stop_renaming)
+stop_button.pack(side=tk.LEFT, padx=5)
+
+settings_button = ttk.Button(button_frame, text="设置", command=open_settings)
+settings_button.pack(side=tk.LEFT, padx=5)
+
+clear_button = ttk.Button(button_frame, text="清空列表", command=lambda: files_listbox.delete(0, tk.END))
+clear_button.pack(side=tk.LEFT, padx=5)
+
 root.mainloop()
